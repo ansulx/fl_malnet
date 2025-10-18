@@ -1,0 +1,81 @@
+# Research Configuration for Graph-based Federated Learning
+# Optimized for IIT Roorkee GPU Server
+# =====================================
+
+# Dataset Configuration (M1 Optimized)
+dataset:
+  path: "malnet-graphs-tiny"
+  max_nodes: 1000  # Reduced for M1 memory constraints
+  batch_size: 8    # Smaller batch size for M1
+  num_workers: 2   # Reduced for M1
+  pin_memory: false  # Disabled for M1
+  persistent_workers: false
+
+# Model Configuration
+model:
+  num_classes: 5
+  gnn_type: "gcn"  # Options: gcn, gat, sage, simple
+  hidden_dim: 128  # Increased for better representation
+  num_layers: 4    # Deeper networks
+  dropout: 0.3
+  activation: "relu"
+  normalization: "batch"
+
+# Federated Learning Configuration (M1 Optimized)
+federated:
+  num_clients: 5       # Reduced for M1 demo
+  num_rounds: 10       # Fewer rounds for quick demo
+  local_epochs: 3      # Reduced for M1 performance
+  aggregation: "fedavg" # Options: fedavg, fedmedian, krum
+  participation_rate: 0.8  # 80% client participation
+  split_strategy: "dirichlet"
+  alpha: 0.5  # Non-IID parameter
+
+# Training Configuration
+training:
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  momentum: 0.9
+  scheduler: "cosine"
+  warmup_epochs: 5
+  max_epochs: 100
+
+# Privacy Configuration
+privacy:
+  enabled: true
+  epsilon: 1.0
+  delta: 1e-5
+  noise_multiplier: 1.1
+  max_grad_norm: 1.0
+  secure_aggregation: false  # For research, can be enabled later
+
+# Server Configuration (M1 MacBook Air)
+server:
+  device: "mps"  # M1 GPU acceleration
+  mixed_precision: false  # M1 doesn't support automatic mixed precision
+  gradient_accumulation: 2  # Reduced for M1
+  max_memory_usage: 0.6  # Conservative for M1
+
+# Evaluation Configuration
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "auc"]
+  save_predictions: true
+  save_model: true
+  checkpoint_frequency: 10
+  early_stopping_patience: 20
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  save_logs: true
+  log_dir: "logs"
+  tensorboard: true
+  wandb: false  # Can be enabled for experiment tracking
+
+# Research Configuration
+research:
+  experiment_name: "graph_fl_malware_detection"
+  seed: 42
+  deterministic: true
+  benchmark_mode: false
+  profile_memory: false
