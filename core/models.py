@@ -60,7 +60,7 @@ class ResearchGNN(nn.Module):
         self.pooling = pooling
         
         # Input projection
-        self.input_proj = nn.Linear(5, hidden_dim)  # 5 input features
+        self.input_proj = nn.Linear(3, hidden_dim)  # 3 input features (degree, in_degree, out_degree)
         
         # GNN layers
         self.gnn_layers = nn.ModuleList()

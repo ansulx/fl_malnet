@@ -239,21 +239,20 @@ class ResearchDataSplitter:
 
 def create_federated_datasets(dataset: Dataset, num_clients: int, 
                             split_strategy: str = 'dirichlet', 
-                            alpha: float = 0.5) -> Tuple[List[Subset], Dict]:
+                            alpha: float = 0.5) -> List[Subset]:
     """
-    Create federated datasets and return statistics
+    Create federated datasets
     
     Args:
         dataset: Dataset to split
         num_clients: Number of clients
-        split_strategy: Strategy for splitting
+        split_strategy: Strategy for splitting ('iid', 'non_iid', 'dirichlet')
         alpha: Parameter for Dirichlet distribution
     
     Returns:
-        Tuple of (client_datasets, statistics)
+        List of client datasets
     """
     splitter = ResearchDataSplitter(num_clients, split_strategy, alpha)
     client_datasets = splitter.split_dataset(dataset)
-    stats = splitter.get_split_statistics(dataset, client_datasets)
     
-    return client_datasets, stats
+    return client_datasets

@@ -333,9 +333,9 @@ class FederatedClient:
         self.device = device
         
         # Training configuration
-        self.learning_rate = config.get('training', {}).get('learning_rate', 0.001)
-        self.weight_decay = config.get('training', {}).get('weight_decay', 1e-4)
-        self.momentum = config.get('training', {}).get('momentum', 0.9)
+        self.learning_rate = float(config.get('training', {}).get('learning_rate', 0.001))
+        self.weight_decay = float(config.get('training', {}).get('weight_decay', 1e-4))
+        self.momentum = float(config.get('training', {}).get('momentum', 0.9))
         
         # Privacy mechanisms
         self.privacy_enabled = config.get('privacy', {}).get('enabled', False)

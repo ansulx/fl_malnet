@@ -132,30 +132,26 @@ class MalNetGraphLoader:
         return edge_index, self.max_nodes
     
     def _create_node_features(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-        """Create comprehensive node features"""
+        """Create simple node features (optimized for speed)"""
         if num_nodes == 0:
-            return torch.zeros(1, 5)
+            return torch.zeros(1, 3)
         
-        # Calculate node degrees
+        # Calculate node degrees efficiently using scatter operations
         degrees = torch.zeros(num_nodes)
         in_degrees = torch.zeros(num_nodes)
         out_degrees = torch.zeros(num_nodes)
         
-        for edge in edge_index.t():
-            if edge[0] < num_nodes and edge[1] < num_nodes:
-                degrees[edge[0]] += 1
-                degrees[edge[1]] += 1
-                out_degrees[edge[0]] += 1
-                in_degrees[edge[1]] += 1
+        if edge_index.size(1) > 0:
+            # Count out-degrees
+            out_degrees.scatter_add_(0, edge_index[0], torch.ones(edge_index.size(1)))
+            # Count in-degrees
+            in_degrees.scatter_add_(0, edge_index[1], torch.ones(edge_index.size(1)))
+            # Total degree
+            degrees = in_degrees + out_degrees
         
-        # Additional features
-        clustering_coeff = self._calculate_clustering_coefficient(edge_index, num_nodes)
-        
-        # Stack features: [degree, in_degree, out_degree, clustering, centrality]
-        features = torch.stack([
-            degrees, in_degrees, out_degrees, 
-            clustering_coeff, torch.ones(num_nodes)  # centrality placeholder
-        ], dim=1)
+        # Stack features: [degree, in_degree, out_degree]
+        # Removed expensive clustering coefficient calculation
+        features = torch.stack([degrees, in_degrees, out_degrees], dim=1)
         
         return features
     
@@ -194,7 +190,7 @@ class MalNetGraphLoader:
     def _create_empty_graph(self) -> Data:
         """Create empty graph for error cases"""
         return Data(
-            x=torch.zeros(1, 5),
+            x=torch.zeros(1, 3),  # 3 features: degree, in_degree, out_degree
             edge_index=torch.zeros(2, 0, dtype=torch.long),
             num_nodes=1
         )
@@ -207,13 +203,15 @@ class MalNetGraphLoader:
         test_dataset = self._create_dataset('test')
         
         # Create data loaders
+        persistent_workers = self.num_workers > 0  # Only enable if workers are used
+        
         train_loader = PyGDataLoader(
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=persistent_workers
         )
         
         val_loader = PyGDataLoader(
@@ -222,7 +220,7 @@ class MalNetGraphLoader:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=persistent_workers
         )
         
         test_loader = PyGDataLoader(
@@ -231,7 +229,7 @@ class MalNetGraphLoader:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=persistent_workers
         )
         
         return train_loader, val_loader, test_loader
