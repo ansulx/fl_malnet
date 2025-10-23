@@ -689,11 +689,40 @@ def run_federated_learning():
     if os.path.exists(checkpoint_file):
         try:
             checkpoint = torch.load(checkpoint_file)
+            checkpoint_round = checkpoint['round']
+            
+            # Check if training is already complete
+            if checkpoint_round >= config['num_rounds']:
+                print(f"\n{Color.GREEN}✅ Training already complete at round {checkpoint_round}!{Color.RESET}")
+                print(f"{Color.GREEN}📊 Final Accuracy: {checkpoint['global_accuracy']:.2f}%{Color.RESET}")
+                print(f"\n{Color.YELLOW}💡 To restart training, delete: {checkpoint_file}{Color.RESET}\n")
+                
+                # Load checkpoint data for display
+                server.model.load_state_dict(checkpoint['model_state'])
+                server.global_accuracy = checkpoint['global_accuracy']
+                server.accuracy_history = deque(checkpoint['accuracy_history'], maxlen=50)
+                
+                # Show final dashboard
+                dashboard.render()
+                
+                print(f"\n{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}")
+                print(f"{Color.GREEN}{Color.BOLD}{'✅ FEDERATED LEARNING COMPLETE (Loaded from checkpoint)':^80}{Color.RESET}")
+                print(f"{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}\n")
+                print(f"🎯 Final Global Accuracy: {Color.GREEN}{Color.BOLD}{server.global_accuracy:.2f}%{Color.RESET}")
+                if len(server.accuracy_history) > 1:
+                    improvement = server.global_accuracy - list(server.accuracy_history)[0]
+                    print(f"📈 Improvement: {'+' if improvement >= 0 else ''}{improvement:.2f}%")
+                print(f"💾 Total Samples: {server.total_samples:,}")
+                print(f"\n{Color.CYAN}To retrain, delete checkpoint and run again.{Color.RESET}\n")
+                return
+            
+            # Resume from checkpoint
             server.model.load_state_dict(checkpoint['model_state'])
-            start_round = checkpoint['round'] + 1
+            start_round = checkpoint_round + 1
             server.accuracy_history = deque(checkpoint['accuracy_history'], maxlen=50)
-            dashboard.log(f"Resumed from checkpoint at round {checkpoint['round']}")
-            print(f"\n{Color.YELLOW}📁 Resuming from round {checkpoint['round']}{Color.RESET}\n")
+            server.global_accuracy = checkpoint.get('global_accuracy', 0.0)
+            dashboard.log(f"Resumed from checkpoint at round {checkpoint_round}")
+            print(f"\n{Color.YELLOW}📁 Resuming from round {checkpoint_round} (Accuracy: {server.global_accuracy:.2f}%){Color.RESET}\n")
             time.sleep(2)
         except Exception as e:
             print(f"\n{Color.YELLOW}⚠️  Could not load checkpoint: {e}{Color.RESET}\n")
