@@ -27,6 +27,7 @@ class ResearchGNN(nn.Module):
     """
     
     def __init__(self, 
+                 input_dim: int = 3,
                  num_classes: int = 5,
                  hidden_dim: int = 128,
                  num_layers: int = 4,
@@ -39,6 +40,7 @@ class ResearchGNN(nn.Module):
         Initialize research GNN
         
         Args:
+            input_dim: Input feature dimension
             num_classes: Number of output classes
             hidden_dim: Hidden dimension size
             num_layers: Number of GNN layers
@@ -50,6 +52,7 @@ class ResearchGNN(nn.Module):
         """
         super(ResearchGNN, self).__init__()
         
+        self.input_dim = input_dim
         self.num_classes = num_classes
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
@@ -59,8 +62,8 @@ class ResearchGNN(nn.Module):
         self.normalization = normalization
         self.pooling = pooling
         
-        # Input projection
-        self.input_proj = nn.Linear(3, hidden_dim)  # 3 input features (degree, in_degree, out_degree)
+        # Input projection (adaptive to input dimension)
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
         
         # GNN layers
         self.gnn_layers = nn.ModuleList()
@@ -176,11 +179,13 @@ class ResearchGNN(nn.Module):
         return {name: param.clone().detach() for name, param in self.named_parameters()}
     
     def set_weights(self, weights: Dict[str, torch.Tensor]) -> None:
-        """Set model weights from dictionary"""
+        """Set model weights from dictionary with type safety"""
         with torch.no_grad():
             for name, param in self.named_parameters():
                 if name in weights:
-                    param.copy_(weights[name])
+                    # Ensure weight has same dtype as parameter
+                    weight_tensor = weights[name].to(dtype=param.dtype, device=param.device)
+                    param.copy_(weight_tensor)
                 else:
                     logger.warning(f"Weight {name} not found in provided weights")
     
@@ -243,15 +248,16 @@ class LightweightGNN(nn.Module):
         return output
     
     def get_weights(self) -> Dict[str, torch.Tensor]:
-        """Get model weights as dictionary"""
-        return {name: param.clone().detach() for name, param in self.named_parameters()}
+        """Get model weights with dtype preservation"""
+        return {name: param.clone().detach().to(dtype=param.dtype) for name, param in self.named_parameters()}
     
     def set_weights(self, weights: Dict[str, torch.Tensor]) -> None:
-        """Set model weights from dictionary"""
+        """Set model weights with type safety"""
         with torch.no_grad():
             for name, param in self.named_parameters():
                 if name in weights:
-                    param.copy_(weights[name])
+                    weight_tensor = weights[name].to(dtype=param.dtype, device=param.device)
+                    param.copy_(weight_tensor)
     
     def count_parameters(self) -> int:
         """Count total number of parameters"""

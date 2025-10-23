@@ -1,6 +1,8 @@
-# FL MalNet: Research-Grade Federated Learning for Malware Detection
+# FL MalNet: Federated Learning for Android Malware Detection
 
-A professional, research-grade federated learning framework for malware detection using graph neural networks on the MalNet dataset. Optimized for IIT Roorkee GPU servers.
+Clean, robust, research-grade federated learning system for malware detection using Graph Neural Networks on the MalNet dataset.
+
+**🚀 Quick Start:** `python run_clean_fl.py`
 
 ## 🎯 Key Features
 

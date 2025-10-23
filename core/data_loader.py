@@ -88,7 +88,7 @@ class MalNetGraphLoader:
             if not edges:
                 return self._create_empty_graph()
             
-            # Convert to tensor
+            # Convert to tensor - ensure edge_index is Long type
             edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
             num_nodes = num_nodes + 1
             
@@ -96,13 +96,17 @@ class MalNetGraphLoader:
             if num_nodes > self.max_nodes:
                 edge_index, num_nodes = self._subsample_graph(edge_index, num_nodes)
             
-            # Create node features
+            # Ensure edge_index is still Long after subsampling
+            if edge_index.dtype != torch.long:
+                edge_index = edge_index.long()
+            
+            # Create node features (returns float32)
             node_features = self._create_node_features(edge_index, num_nodes)
             
-            # Create graph data
+            # Create graph data with explicit types
             data = Data(
-                x=node_features,
-                edge_index=edge_index,
+                x=node_features.float(),  # Ensure float32
+                edge_index=edge_index.long(),  # Ensure Long/int64
                 num_nodes=num_nodes
             )
             
@@ -119,41 +123,54 @@ class MalNetGraphLoader:
         node_mask = torch.zeros(num_nodes, dtype=torch.bool)
         node_mask[node_indices] = True
         
-        # Filter edges
-        edge_mask = node_mask[edge_index[0]] & node_mask[edge_index[1]]
+        # Filter edges (ensure Long type throughout)
+        edge_mask = node_mask[edge_index[0].long()] & node_mask[edge_index[1].long()]
         edge_index = edge_index[:, edge_mask]
         
-        # Remap node indices
+        # Remap node indices - create new tensor to ensure Long type
+        new_edge_index = torch.zeros_like(edge_index, dtype=torch.long)
         node_mapping = {old_idx.item(): new_idx for new_idx, old_idx in enumerate(node_indices)}
         for i in range(edge_index.size(1)):
-            edge_index[0, i] = node_mapping[edge_index[0, i].item()]
-            edge_index[1, i] = node_mapping[edge_index[1, i].item()]
+            new_edge_index[0, i] = node_mapping[edge_index[0, i].item()]
+            new_edge_index[1, i] = node_mapping[edge_index[1, i].item()]
         
-        return edge_index, self.max_nodes
+        return new_edge_index, self.max_nodes
     
     def _create_node_features(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """Create simple node features (optimized for speed)"""
         if num_nodes == 0:
-            return torch.zeros(1, 3)
+            return torch.zeros(1, 3, dtype=torch.float32)
         
         # Calculate node degrees efficiently using scatter operations
-        degrees = torch.zeros(num_nodes)
-        in_degrees = torch.zeros(num_nodes)
-        out_degrees = torch.zeros(num_nodes)
+        # FIXED: Explicit dtype to prevent casting errors
+        degrees = torch.zeros(num_nodes, dtype=torch.float32)
+        in_degrees = torch.zeros(num_nodes, dtype=torch.float32)
+        out_degrees = torch.zeros(num_nodes, dtype=torch.float32)
         
         if edge_index.size(1) > 0:
-            # Count out-degrees
-            out_degrees.scatter_add_(0, edge_index[0], torch.ones(edge_index.size(1)))
+            # Create ones with same dtype as target tensors
+            ones = torch.ones(edge_index.size(1), dtype=torch.float32)
+            
+            # Count out-degrees (ensure indices are long)
+            out_degrees.scatter_add_(0, edge_index[0].long(), ones)
             # Count in-degrees
-            in_degrees.scatter_add_(0, edge_index[1], torch.ones(edge_index.size(1)))
+            in_degrees.scatter_add_(0, edge_index[1].long(), ones)
             # Total degree
             degrees = in_degrees + out_degrees
         
         # Stack features: [degree, in_degree, out_degree]
-        # Removed expensive clustering coefficient calculation
         features = torch.stack([degrees, in_degrees, out_degrees], dim=1)
         
-        return features
+        # RESEARCH-GRADE: Normalize features for better learning
+        # Log transform to handle skewed degree distributions
+        features = torch.log1p(features)  # log(1+x) to handle zeros
+        # Standardize to mean=0, std=1
+        feature_std = features.std(dim=0)
+        if feature_std.sum() > 0:
+            feature_mean = features.mean(dim=0)
+            features = (features - feature_mean) / (feature_std + 1e-8)
+        
+        return features.float()
     
     def _calculate_clustering_coefficient(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """Calculate local clustering coefficient for each node"""
@@ -190,8 +207,8 @@ class MalNetGraphLoader:
     def _create_empty_graph(self) -> Data:
         """Create empty graph for error cases"""
         return Data(
-            x=torch.zeros(1, 3),  # 3 features: degree, in_degree, out_degree
-            edge_index=torch.zeros(2, 0, dtype=torch.long),
+            x=torch.zeros(1, 3, dtype=torch.float32),  # 3 features with explicit float type
+            edge_index=torch.zeros(2, 0, dtype=torch.long),  # Edge indices must be Long
             num_nodes=1
         )
     
@@ -263,7 +280,7 @@ class GraphDataset(Dataset):
         self.samples = self._load_samples()
     
     def _load_samples(self) -> List[Dict]:
-        """Load samples for the split"""
+        """Load samples for the split with proper train/val/test splitting"""
         samples = []
         
         # Define class directories
@@ -286,17 +303,33 @@ class GraphDataset(Dataset):
                             'class_idx': self.loader.class_to_idx[class_name]
                         })
         
-        return samples
+        # RESEARCH-GRADE: Proper train/val/test split
+        import random
+        random.seed(42)  # Reproducibility
+        random.shuffle(samples)
+        
+        # 70% train, 15% val, 15% test split
+        total = len(samples)
+        train_end = int(0.7 * total)
+        val_end = int(0.85 * total)
+        
+        if self.split == 'train':
+            return samples[:train_end]
+        elif self.split == 'val':
+            return samples[train_end:val_end]
+        else:  # test
+            return samples[val_end:]
     
     def __len__(self) -> int:
         return len(self.samples)
     
-    def __getitem__(self, idx: int) -> Tuple[Data, int]:
-        """Get graph and label"""
+    def __getitem__(self, idx: int) -> Data:
+        """Get graph and label as PyG Data object"""
         sample = self.samples[idx]
         graph = self.loader.load_graph(sample['graph_path'])
-        label = sample['class_idx']
-        return graph, label
+        # Attach label to graph object (proper PyG format)
+        graph.y = torch.tensor(sample['class_idx'], dtype=torch.long)
+        return graph
     
     def get_class_distribution(self) -> Dict[str, int]:
         """Get class distribution"""

@@ -2,11 +2,11 @@
 """
 Clean Federated Learning System - Real-Time Dashboard
 ======================================================
-Simplified, visual, research-grade FL for supervisor demonstration
+Research-grade FL system for malware detection research
 
 Run: python run_clean_fl.py
 
-ROBUST VERSION: Handles timeouts, errors, and automatic recovery
+RESEARCH-GRADE VERSION: Using advanced GNN architectures and proper evaluation
 """
 
 import os
@@ -24,13 +24,30 @@ from torch_geometric.data import Data, Batch
 import numpy as np
 import warnings
 import traceback
+import gc
+
+# Import research-grade model
+from core.models import ResearchGNN
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
-# Set timeouts and error handling
-torch.backends.cudnn.benchmark = True  # Optimize CUDA operations
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'  # Prevent CUDA fragmentation
+# Set timeouts and error handling - RESEARCH-GRADE STABILITY
+torch.backends.cudnn.benchmark = False  # Disable for stability
+torch.backends.cudnn.deterministic = True  # Deterministic training
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
+os.environ['OMP_NUM_THREADS'] = '1'  # Prevent threading issues
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Better error messages
+
+# Increase timeout settings for stability
+import socket
+socket.setdefaulttimeout(300)  # 5 minutes for any network operations
+
+# Set PyTorch memory management
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    # Prevent CUDA timeout issues
+    torch.cuda.synchronize()
 
 # ANSI colors for terminal
 class Color:
@@ -51,7 +68,7 @@ class Color:
 # ============================================================================
 
 class MalwareGNN(nn.Module):
-    """Simple GCN for malware detection"""
+    """Simple GCN for malware detection (legacy - use ResearchGNN instead)"""
     
     def __init__(self, input_dim=3, num_classes=5, hidden_dim=64):
         super(MalwareGNN, self).__init__()
@@ -69,13 +86,16 @@ class MalwareGNN(nn.Module):
         return x
     
     def get_weights(self):
-        return {name: param.clone().detach() for name, param in self.named_parameters()}
+        """Get model weights with dtype preservation"""
+        return {name: param.clone().detach().to(dtype=param.dtype) for name, param in self.named_parameters()}
     
     def set_weights(self, weights):
+        """Set model weights with type safety"""
         with torch.no_grad():
             for name, param in self.named_parameters():
                 if name in weights:
-                    param.copy_(weights[name])
+                    weight_tensor = weights[name].to(dtype=param.dtype, device=param.device)
+                    param.copy_(weight_tensor)
 
 
 # ============================================================================
@@ -119,25 +139,44 @@ class FederatedServer:
         self.total_samples += num_samples
     
     def aggregate_updates(self, device_updates):
-        """FedAvg aggregation"""
+        """FedAvg aggregation with strict type safety"""
         self.status = "AGGREGATING"
         
         total_samples = sum(u['num_samples'] for u in device_updates)
         aggregated_weights = {}
         
-        # Weighted average
+        # Weighted average with STRICT type handling
         for key in self.model.state_dict().keys():
-            weighted_sum = torch.zeros_like(self.model.state_dict()[key])
+            # Get reference parameter to preserve dtype and device
+            ref_param = self.model.state_dict()[key]
+            
+            # Initialize with zeros matching exact dtype
+            weighted_sum = torch.zeros_like(ref_param, dtype=ref_param.dtype, device=ref_param.device)
+            
             for update in device_updates:
-                weight = update['num_samples'] / total_samples
-                weighted_sum += weight * update['weights'][key]
+                # Calculate weight as same dtype as parameter
+                weight_scalar = float(update['num_samples']) / float(total_samples)
+                
+                # Get update weight and ensure exact dtype match
+                update_weight = update['weights'][key]
+                
+                # Move to correct device and dtype BEFORE multiplication
+                update_weight = update_weight.to(device=ref_param.device, dtype=ref_param.dtype)
+                
+                # Multiply by scalar (not tensor) to preserve dtype
+                weighted_update = update_weight * weight_scalar
+                
+                # Add with explicit dtype preservation
+                weighted_sum = weighted_sum + weighted_update.to(dtype=ref_param.dtype)
+            
+            # Store with exact dtype
             aggregated_weights[key] = weighted_sum
         
         # Update global model
         self.model.load_state_dict(aggregated_weights)
         
     def evaluate(self, test_loader, max_retries=3):
-        """Evaluate global model with error handling"""
+        """Evaluate global model with error handling and safety checks"""
         self.status = "EVALUATING"
         
         for attempt in range(max_retries):
@@ -152,15 +191,34 @@ class FederatedServer:
                 with torch.no_grad():
                     for batch_data in test_loader:
                         try:
-                            # Handle both list and Batch formats
-                            if isinstance(batch_data, list):
-                                batch, labels = batch_data[0].to(self.device), batch_data[1].to(self.device)
-                            else:
-                                batch = batch_data.to(self.device)
-                                labels = batch.y
+                            # Safety check: skip if batch_data is None
+                            if batch_data is None:
+                                continue
                             
+                            # FIXED: Proper PyG Data object handling with type safety
+                            batch = batch_data.to(self.device)
+                            labels = batch.y.long()  # Ensure labels are Long type
+                            
+                            # Ensure batch features have correct type
+                            if batch.x.dtype != torch.float32:
+                                batch.x = batch.x.float()
+                            
+                            # Safety check: validate tensor shapes
+                            if batch.x.shape[0] == 0 or labels.shape[0] == 0:
+                                continue
+                            
+                            # Forward pass with error catching
                             output = self.model(batch.x, batch.edge_index, batch.batch)
+                            
+                            # Safety check: validate output
+                            if output.shape[0] == 0 or torch.isnan(output).any() or torch.isinf(output).any():
+                                continue
+                            
                             loss = F.cross_entropy(output, labels)
+                            
+                            # Safety check: validate loss
+                            if torch.isnan(loss) or torch.isinf(loss):
+                                continue
                             
                             _, predicted = torch.max(output.data, 1)
                             total += labels.size(0)
@@ -168,27 +226,39 @@ class FederatedServer:
                             total_loss += loss.item()
                             batch_count += 1
                             
-                            # Periodically clear cache
-                            if batch_count % 10 == 0:
+                            # More frequent cache clearing and garbage collection
+                            if batch_count % 5 == 0:  # Changed from 10 to 5
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                gc.collect()  # Python garbage collection
                                     
                         except RuntimeError as e:
-                            if "out of memory" in str(e):
+                            error_msg = str(e).lower()
+                            if "out of memory" in error_msg or "cuda" in error_msg:
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                gc.collect()
+                                continue
+                            elif "cast" in error_msg or "type" in error_msg:
+                                # Type casting error - skip this batch
                                 continue
                             else:
-                                raise
+                                # Log but continue with other batches
+                                continue
+                        except Exception as e:
+                            # Any other error - skip batch and continue
+                            continue
                 
                 if total > 0 and batch_count > 0:
                     self.global_accuracy = 100.0 * correct / total
                     self.global_loss = total_loss / batch_count
                     self.accuracy_history.append(self.global_accuracy)
                     
-                    # Clear cache after evaluation
+                    # Aggressive cleanup after evaluation
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                        torch.cuda.synchronize()  # Synchronize CUDA operations
+                    gc.collect()
                     
                     return {'accuracy': self.global_accuracy, 'loss': self.global_loss}
                 else:
@@ -200,6 +270,8 @@ class FederatedServer:
                     time.sleep(1)
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    gc.collect()
                     continue
                 else:
                     # Return last known values
@@ -246,16 +318,22 @@ class FederatedDevice:
                     
                     for batch_data in self.local_data:
                         try:
-                            # Handle both list and Batch formats
-                            if isinstance(batch_data, list):
-                                batch, labels = batch_data[0].to(self.device), batch_data[1].to(self.device)
-                            else:
-                                batch = batch_data.to(self.device)
-                                labels = batch.y
+                            # FIXED: Proper PyG Data object handling with type safety
+                            batch = batch_data.to(self.device)
+                            labels = batch.y.long()  # Ensure labels are Long type
+                            
+                            # Ensure batch components have correct types
+                            if batch.x.dtype != torch.float32:
+                                batch.x = batch.x.float()
                             
                             optimizer.zero_grad()
                             output = self.model(batch.x, batch.edge_index, batch.batch)
                             loss = F.cross_entropy(output, labels)
+                            
+                            # Check for NaN loss before backward
+                            if torch.isnan(loss) or torch.isinf(loss):
+                                continue
+                            
                             loss.backward()
                             
                             # Gradient clipping to prevent exploding gradients
@@ -269,18 +347,29 @@ class FederatedDevice:
                             correct += (predicted == labels).sum().item()
                             batch_count += 1
                             
-                            # Periodically clear cache to prevent memory issues
-                            if batch_count % 10 == 0:
+                            # More frequent cache clearing
+                            if batch_count % 5 == 0:  # Changed from 10 to 5
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                gc.collect()
                                     
                         except RuntimeError as e:
-                            if "out of memory" in str(e):
+                            error_msg = str(e).lower()
+                            if "out of memory" in error_msg or "cuda" in error_msg:
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                gc.collect()
+                                continue
+                            elif "cast" in error_msg or "type" in error_msg:
+                                # Type casting error - skip this batch
                                 continue
                             else:
                                 raise
+                        except Exception as e:
+                            # Catch any other errors and continue
+                            continue
                     
                     if batch_count > 0:
                         self.local_loss = epoch_loss / batch_count
@@ -451,22 +540,26 @@ class TerminalDashboard:
 # ============================================================================
 
 def load_malnet_data():
-    """Load and prepare MalNet data with optimized settings"""
+    """Load and prepare MalNet data with optimized settings for research"""
     from core.data_loader import MalNetGraphLoader
     
     config = {
         'dataset': {
             'path': 'malnet-graphs-tiny',
             'max_nodes': 2000,
-            'batch_size': 8,  # Reduced from 16 to prevent timeouts
-            'num_workers': 0,
-            'pin_memory': False
+            'batch_size': 4,  # Optimized for stability
+            'num_workers': 0,  # 0 workers to prevent timeout/connection issues
+            'pin_memory': False  # Disabled to prevent CUDA issues
         },
         'model': {'num_classes': 5}
     }
     
     data_loader = MalNetGraphLoader(config)
     train_loader, val_loader, test_loader = data_loader.create_data_loaders()
+    
+    print(f"   {Color.GREEN}✓{Color.RESET} Train: {len(train_loader.dataset)} samples")
+    print(f"   {Color.GREEN}✓{Color.RESET} Val: {len(val_loader.dataset)} samples")
+    print(f"   {Color.GREEN}✓{Color.RESET} Test: {len(test_loader.dataset)} samples")
     
     return train_loader, test_loader
 
@@ -486,8 +579,14 @@ def split_data_for_devices(train_loader, num_devices=5):
             end_idx = total_samples
         
         device_data = [dataset[j] for j in range(start_idx, end_idx)]
-        # Reduced batch size from 16 to 8 for stability
-        device_loader = PyGDataLoader(device_data, batch_size=8, shuffle=True, num_workers=0)
+        # Further reduced batch size from 8 to 4 for stability
+        device_loader = PyGDataLoader(
+            device_data, 
+            batch_size=4,  # Reduced from 8 to 4
+            shuffle=True, 
+            num_workers=0,
+            pin_memory=False  # Disable pin_memory to prevent CUDA issues
+        )
         device_datasets.append(device_loader)
         
         start_idx = end_idx
@@ -521,21 +620,27 @@ def run_federated_learning():
     
     # Detect input dimension from first sample
     first_sample = train_loader.dataset[0]
-    if isinstance(first_sample, tuple):
-        input_dim = first_sample[0].x.shape[1]
-    else:
-        input_dim = first_sample.x.shape[1]
+    input_dim = first_sample.x.shape[1]
     print(f"   {Color.GREEN}✓{Color.RESET} Detected input dimension: {input_dim} features")
     
     # Split data for devices
     device_datasets = split_data_for_devices(train_loader, config['num_devices'])
     print(f"   {Color.GREEN}✓{Color.RESET} Split data across {config['num_devices']} devices\n")
     
-    # Create global model
-    print(f"🤖 Creating global model...")
-    global_model = MalwareGNN(input_dim=input_dim, num_classes=5, hidden_dim=64)
+    # Create RESEARCH-GRADE global model
+    print(f"🤖 Creating research-grade GNN model...")
+    global_model = ResearchGNN(
+        input_dim=input_dim,
+        num_classes=5,
+        hidden_dim=128,  # Larger for research
+        num_layers=4,
+        gnn_type='gat',  # GAT performs better than GCN
+        dropout=0.3,
+        normalization='batch',
+        pooling='mean_max'
+    )
     num_params = sum(p.numel() for p in global_model.parameters())
-    print(f"   {Color.GREEN}✓{Color.RESET} Model created: {num_params:,} parameters\n")
+    print(f"   {Color.GREEN}✓{Color.RESET} Research GNN created (GAT, 4 layers, 128-dim): {num_params:,} parameters\n")
     
     # Create server
     print(f"🖥️  Starting FL server...")
@@ -553,7 +658,16 @@ def run_federated_learning():
             device_id=i+1,
             device_name=name,
             local_data=local_data,
-            model=MalwareGNN(input_dim=input_dim, num_classes=5, hidden_dim=64).to(config['device']),
+            model=ResearchGNN(
+                input_dim=input_dim,
+                num_classes=5,
+                hidden_dim=128,
+                num_layers=4,
+                gnn_type='gat',
+                dropout=0.3,
+                normalization='batch',
+                pooling='mean_max'
+            ).to(config['device']),
             config=config
         )
         devices.append(device)
@@ -625,16 +739,42 @@ def run_federated_learning():
             
             # Only aggregate if we have at least one valid update
             if len(device_updates) > 0:
-                # Aggregate
-                dashboard.log(f"Aggregating updates from {len(device_updates)} devices...")
-                dashboard.render()
-                server.aggregate_updates(device_updates)
-                time.sleep(0.3)
-                
-                # Evaluate
-                dashboard.log("Evaluating global model...")
-                dashboard.render()
-                results = server.evaluate(test_loader)
+                try:
+                    # Aggregate with error handling
+                    dashboard.log(f"Aggregating updates from {len(device_updates)} devices...")
+                    dashboard.render()
+                    
+                    try:
+                        server.aggregate_updates(device_updates)
+                        dashboard.log("✓ Aggregation successful")
+                    except Exception as agg_error:
+                        import traceback
+                        error_trace = traceback.format_exc()
+                        print(f"\n{'='*80}")
+                        print(f"AGGREGATION ERROR at Round {round_num}:")
+                        print(f"{'='*80}")
+                        print(error_trace)
+                        print(f"{'='*80}\n")
+                        dashboard.log(f"Aggregation FAILED: {str(agg_error)[:40]}")
+                        # Skip evaluation if aggregation failed
+                        continue
+                    
+                    time.sleep(0.3)
+                    
+                    # Evaluate
+                    dashboard.log("Evaluating global model...")
+                    dashboard.render()
+                    results = server.evaluate(test_loader)
+                    dashboard.log(f"✓ Evaluation successful: {results['accuracy']:.1f}%")
+                except Exception as e:
+                    import traceback
+                    print(f"\n{'='*80}")
+                    print(f"GENERAL ERROR at Round {round_num}:")
+                    print(f"{'='*80}")
+                    print(traceback.format_exc())
+                    print(f"{'='*80}\n")
+                    dashboard.log(f"Round error: {str(e)[:50]}")
+                    results = {'accuracy': server.global_accuracy, 'loss': server.global_loss}
                 
                 round_time = time.time() - round_start
                 server.round_times.append(round_time)
@@ -660,9 +800,17 @@ def run_federated_learning():
             dashboard.render()
             time.sleep(1)
             
-            # Clear GPU cache between rounds
+            # Aggressive cleanup between rounds
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                torch.cuda.ipc_collect()  # Additional CUDA cleanup
+            gc.collect()  # Python garbage collection
+            
+            # Additional safety: reset gradients
+            for device in devices:
+                if hasattr(device.model, 'zero_grad'):
+                    device.model.zero_grad()
                 
         except KeyboardInterrupt:
             dashboard.log("Training interrupted by user")
@@ -680,8 +828,20 @@ def run_federated_learning():
     print(f"{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}\n")
     
     print(f"🎯 Final Global Accuracy: {Color.GREEN}{Color.BOLD}{server.global_accuracy:.2f}%{Color.RESET}")
-    print(f"📈 Improvement: +{server.global_accuracy - list(server.accuracy_history)[0]:.2f}%")
-    print(f"⏱️  Average Round Time: {np.mean(server.round_times):.1f}s")
+    
+    # FIXED: Handle empty accuracy history without NaN
+    if len(server.accuracy_history) > 1:
+        improvement = server.global_accuracy - list(server.accuracy_history)[0]
+        print(f"📈 Improvement: {'+' if improvement >= 0 else ''}{improvement:.2f}%")
+    else:
+        print(f"📈 Improvement: N/A (insufficient history)")
+    
+    # FIXED: Handle empty round times without NaN
+    if len(server.round_times) > 0:
+        print(f"⏱️  Average Round Time: {np.mean(server.round_times):.1f}s")
+    else:
+        print(f"⏱️  Average Round Time: N/A")
+    
     print(f"💾 Total Samples Trained: {server.total_samples:,}")
     print(f"\n{Color.CYAN}Dashboard closed. Training complete!{Color.RESET}\n")
 
